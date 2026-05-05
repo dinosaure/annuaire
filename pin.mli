@@ -14,4 +14,15 @@ val authenticator : t -> X509.Authenticator.t
     SubjectPublicKeyInfo (SHA256) matches any pin currently in [t] advertised as
     DANE-EE [3 1 1]. *)
 
-val pp_tlsa : Dns.Tlsa.t Fmt.t
+type error =
+  [ `Msg of string
+  | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
+  | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ]
+
+val launch :
+     Mnet.UDP.state
+  -> Mnet_happy_eyeballs.t
+  -> Ipaddr.t
+  -> [ `host ] Domain_name.t
+  -> string
+  -> ((Dns.proto * Mnet_cli.nameserver) * unit Miou.t, [> error ]) result

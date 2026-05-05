@@ -98,7 +98,7 @@ let with_udp t ~handler udp port =
   in
   go ()
 
-let with_tls t state ~handler tcp port =
+let with_tls t tls ~handler tcp port =
   let rec go orphans listen =
     clean_up orphans;
     let flow = Mnet.TCP.accept tcp listen in
@@ -108,7 +108,7 @@ let with_tls t state ~handler tcp port =
       let finally = Mnet.TCP.close in
       let res0 = Miou.Ownership.create ~finally flow in
       Miou.Ownership.own res0;
-      let cfg = Atomic.get state in
+      let cfg = MTLS.tls tls in
       let fn () = Mnet_tls.server_of_fd cfg flow in
       match with_timeout ~timeout:_2s fn with
       | Error (`Timeout | `Exn _) ->
@@ -240,6 +240,16 @@ let server t proto ipaddr pkt hdr question data str =
 
 let _5ms = 500_000_000
 
+let pp_nameservers ppf (proto, nameservers) =
+  match (proto, nameservers) with
+  | `Tcp, `Tls (_, ipaddr, port) :: _ ->
+      Fmt.pf ppf "tls://%a:%d" Ipaddr.pp ipaddr port
+  | `Tcp, `Plaintext (ipaddr, port) :: _ ->
+      Fmt.pf ppf "tcp://%a:%d" Ipaddr.pp ipaddr port
+  | `Udp, `Plaintext (ipaddr, port) :: _ ->
+      Fmt.pf ppf "udp://%a:%d" Ipaddr.pp ipaddr port
+  | _ -> assert false
+
 let race clients key name =
   let cancel orphans =
     let prms = Seq.of_dispenser (fun () -> Miou.take orphans) in
@@ -259,21 +269,26 @@ let race clients key name =
   let rec terminate orphans =
     match Miou.care orphans with
     | None -> None
-    | Some None ->
-        Log.debug (fun m -> m "Waiting for one of our nameserver");
-        Mkernel.sleep _5ms;
-        terminate orphans
+    | Some None -> Mkernel.sleep _5ms; terminate orphans
     | Some (Some prm) ->
         begin match Miou.await prm with
         | Error _exn -> terminate orphans
         | Ok (Error (`Msg _)) -> terminate orphans
-        | Ok data -> cancel orphans; Some data
+        | Ok data ->
+            Log.debug (fun m ->
+                m "Got a new response, cancel other resolver(s)");
+            cancel orphans;
+            Some data
         end
   in
   let rec go orphans clients =
     match (clean_up orphans, clients) with
-    | None, [] -> terminate orphans
+    | None, [] ->
+        Log.debug (fun m -> m "Waiting our resolver(s)");
+        terminate orphans
     | None, client :: clients ->
+        Log.debug (fun m ->
+            m "Trying with %a" pp_nameservers (Mnet_dns.nameservers client));
         let prm0 =
           Miou.async ~orphans @@ fun () ->
           Mnet_dns.get_resource_record client key name
@@ -372,58 +387,6 @@ let handler t proto ipaddr str =
       in
       Option.map fst reply
 
-let span_to_ns span =
-  let d, ps = Ptime.Span.to_d_ps span in
-  let ns_per_d = 86_400 * 1_000_000_000 in
-  (d * ns_per_d) + Int64.to_int (Int64.div ps 1_000L)
-
-let _1h = Ptime.Span.of_int_s 3600
-
-let renewal_delay validity =
-  let now = Mirage_ptime.now () in
-  let target = Ptime.sub_span validity _1h in
-  let target = Option.value ~default:validity target in
-  let span = Ptime.diff target now in
-  if Ptime.Span.compare span Ptime.Span.zero <= 0 then 0 else span_to_ns span
-
-let publish_tlsa t cfg tls tlsa =
-  Miou.Mutex.protect t.mutex @@ fun () ->
-  let trie = t.server.Dns_server.data in
-  let trie = CA.with_tlsa ~port:cfg.secure_port tls tlsa trie in
-  t.server <- Dns_server.with_data t.server trie
-
-let renew t state cfg tls initial_tlsa initial_valid_until =
-  let current_tlsa = ref initial_tlsa in
-  let valid_until = ref initial_valid_until in
-  let ttl_ns =
-    Int64.to_int (Int64.mul (Int64.of_int32 tls.CA.ttl) 1_000_000_000L)
-  in
-  let rec go () =
-    let delay = renewal_delay !valid_until in
-    if delay > 0 then Mkernel.sleep delay;
-    Log.info (fun m ->
-        m "renewing TLS certificate for %a" Domain_name.pp tls.domain);
-    match CA.generate tls with
-    | Error (`Msg msg) ->
-        Log.err (fun m -> m "Renewal failed (%s); retrying in 1h" msg);
-        Mkernel.sleep (3_600 * 1_000_000_000);
-        go ()
-    | Ok (server, tlsa', valid_until') ->
-        publish_tlsa t cfg tls [ !current_tlsa; tlsa' ];
-        Log.debug (fun m ->
-            m "published overlap TLSA set, waiting %lds for caches" tls.ttl);
-        if ttl_ns > 0 then Mkernel.sleep ttl_ns;
-        Atomic.set state server;
-        publish_tlsa t cfg tls [ tlsa' ];
-        current_tlsa := tlsa';
-        valid_until := valid_until';
-        Log.info (fun m ->
-            m "TLS certificate renewed (valid until %a)" (Ptime.pp_human ())
-              valid_until');
-        go ()
-  in
-  go ()
-
 type daemon = {
     tcp_server: unit Miou.t
   ; udp_server: unit Miou.t
@@ -431,8 +394,8 @@ type daemon = {
   ; crt_update: unit Miou.t option
 }
 
-let create cfg ?(with_reserved = true) ?(ban = Ban.empty) ?(clients = []) ?tls
-    tcp udp he nameservers =
+let create cfg ?(with_reserved = true) ?(ban = Ban.empty) ?tls tcp udp he
+    nameservers =
   let rng = Mirage_crypto_rng.generate in
   let primary = Dns_server.Primary.create ~rng Dns_trie.empty in
   let primary =
@@ -445,27 +408,6 @@ let create cfg ?(with_reserved = true) ?(ban = Ban.empty) ?(clients = []) ?tls
       primary
     else primary
   in
-  let tls =
-    match tls with
-    | None -> None
-    | Some tls ->
-        begin match CA.generate tls with
-        | Error (`Msg msg) ->
-            Log.err (fun m -> m "Cannot generate initial certificate: %s" msg);
-            None
-        | Ok (server, tlsa, valid_until) ->
-            Log.debug (fun m -> m "Prepare a DNS-over-TLS server");
-            let trie = Dns_server.Primary.data primary in
-            let trie = CA.zone ~port:cfg.secure_port tls ~tlsa trie in
-            let now = Mirage_ptime.now () in
-            let mon = Int64.of_int (Mkernel.clock_monotonic ()) in
-            let primary, _ =
-              Dns_server.Primary.with_data primary now mon trie
-            in
-            Some (primary, server, tls, tlsa, valid_until)
-        end
-  in
-  let primary = match tls with Some (p, _, _, _, _) -> p | None -> primary in
   let server = Dns_server.Primary.server primary in
   let mutex = Miou.Mutex.create () in
   let fn (proto, nameserver) =
@@ -475,10 +417,7 @@ let create cfg ?(with_reserved = true) ?(ban = Ban.empty) ?(clients = []) ?tls
     Mnet_dns.create ?cache_size ?edns ?timeout
       ~nameservers:(proto, [ nameserver ]) (udp, he)
   in
-  let clients =
-    List.rev_append (List.rev_map fn nameservers) (List.rev clients)
-  in
-  let clients = List.rev clients in
+  let clients = List.map fn nameservers in
   Logs.info (fun m -> m "Use %d nameserver(s)" (List.length clients));
   let t = { server; clients; mutex; ban } in
   if Ban.cardinal ban > 0 then
@@ -486,18 +425,17 @@ let create cfg ?(with_reserved = true) ?(ban = Ban.empty) ?(clients = []) ?tls
   let tcp_server = Miou.async @@ fun () -> with_tcp t ~handler tcp cfg.port in
   let udp_server = Miou.async @@ fun () -> with_udp t ~handler udp cfg.port in
   let tls_server, crt_update =
+    let get () = t.server.Dns_server.data in
+    let set trie = t.server <- Dns_server.with_data t.server trie in
+    let fn = MTLS.create ~get ~set in
+    let tls = Option.bind tls fn in
     match tls with
     | None -> (None, None)
-    | Some (_, server, tls, tlsa, valid_until) ->
-        let current = Atomic.make server in
-        let listener =
-          Miou.async @@ fun () ->
-          with_tls t current ~handler tcp cfg.secure_port
+    | Some (tls, prm0) ->
+        let prm1 =
+          Miou.async @@ fun () -> with_tls t tls ~handler tcp cfg.secure_port
         in
-        let renewer =
-          Miou.async @@ fun () -> renew t current cfg tls tlsa valid_until
-        in
-        (Some listener, Some renewer)
+        (Some prm0, Some prm1)
   in
   let daemon = { tcp_server; udp_server; tls_server; crt_update } in
   (t, daemon)

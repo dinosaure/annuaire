@@ -62,51 +62,107 @@ type cfg = {
   ; ipaddr: Ipaddr.V4.t
   ; lifetime: Ptime.Span.t
   ; ttl: int32
+  ; seed: string
+  ; mutable count: int
 }
 
-let cfg ?(lifetime = _365d) ?(ttl = 3600l) ipaddr domain =
-  { domain; ipaddr; lifetime; ttl }
+let domain { domain; _ } = domain
+let ttl { ttl; _ } = ttl
+let lifetime { lifetime; _ } = lifetime
+let count { count; _ } = count
 
-let make_tls_config cert pk =
-  let chain = ([ cert ], pk) in
-  Tls.Config.server ~certificates:(`Single chain) ()
+let cfg ?(lifetime = _365d) ?ttl ?(count = 0) ~seed ipaddr domain =
+  (* Here, we "cap" our [ttl] to 3600 seconds (one hour) but if the user ask to
+     have a lifetime smaller than 1h, we "cap" the ttl to this lifetime. *)
+  let ttl =
+    let ttl = Option.map Int32.to_int ttl in
+    let ttl = Option.map Ptime.Span.of_int_s ttl in
+    let ttl = Option.value ~default:(Ptime.Span.of_int_s 3600) ttl in
+    if Ptime.Span.compare lifetime ttl < 0 then
+      Option.get (Ptime.Span.to_int_s lifetime) |> Int32.of_int
+    else 3600l
+  in
+  { domain; ipaddr; lifetime; ttl; count; seed }
 
-let generate tls =
+let generate cfg =
   let ( let* ) = Result.bind in
-  let seed = Mirage_crypto_rng.generate 32 in
-  let lifetime = tls.lifetime in
-  let domain = Domain_name.to_string tls.domain in
+  let lifetime = cfg.lifetime in
+  let domain = Domain_name.to_string cfg.domain in
+  cfg.count <- cfg.count + 1;
+  let seed =
+    let prf = `SHA256
+    and password = cfg.seed
+    and salt = "annuaire"
+    and count = cfg.count
+    and dk_len = 32l in
+    Pbkdf.pbkdf2 ~prf ~password ~salt ~count ~dk_len
+  in
   let* cert, pk, valid_until = make domain ~seed ~lifetime () in
   let tlsa = tlsa_of_cert cert in
-  let* cfg = make_tls_config cert pk in
+  let chain = ([ cert ], pk) in
+  let* cfg = Tls.Config.server ~certificates:(`Single chain) () in
   Ok (cfg, tlsa, valid_until)
 
-let zone tls =
-  let domain = Domain_name.raw tls.domain in
+let regenerate ~count ~seed:password =
+  let seed =
+    let prf = `SHA256 and salt = "annuaire" and dk_len = 32l in
+    Pbkdf.pbkdf2 ~prf ~password ~salt ~count ~dk_len
+  in
+  let pk =
+    let g = Mirage_crypto_rng.(create ~seed (module Fortuna)) in
+    let priv, _ = Mirage_crypto_ec.P256.Dsa.generate ~g () in
+    X509.Private_key.public (`P256 priv)
+  in
+  let data = X509.Public_key.fingerprint ~hash:`SHA256 pk in
+  {
+    Dns.Tlsa.cert_usage= Dns.Tlsa.Domain_issued_certificate
+  ; selector= Dns.Tlsa.Subject_public_key_info
+  ; matching_type= Dns.Tlsa.SHA256
+  ; data
+  }
+
+let zone cfg =
+  let domain = Domain_name.raw cfg.domain in
   let soa = Dns.Soa.create domain in
-  let ns = Domain_name.Host_set.singleton tls.domain in
-  let a = Ipaddr.V4.Set.singleton tls.ipaddr in
+  let ns = Domain_name.Host_set.singleton cfg.domain in
+  let a = Ipaddr.V4.Set.singleton cfg.ipaddr in
   let map =
     Dns.Rr_map.empty
     |> Dns.Rr_map.add Dns.Rr_map.Soa soa
-    |> Dns.Rr_map.add Dns.Rr_map.Ns (tls.ttl, ns)
-    |> Dns.Rr_map.add Dns.Rr_map.A (tls.ttl, a)
+    |> Dns.Rr_map.add Dns.Rr_map.Ns (cfg.ttl, ns)
+    |> Dns.Rr_map.add Dns.Rr_map.A (cfg.ttl, a)
   in
   Domain_name.Map.singleton domain map
 
-let tlsa_name ?(port = 853) tls =
-  let raw = Domain_name.raw tls.domain in
+let tlsa_name ?(port = 853) cfg =
+  let raw = Domain_name.raw cfg.domain in
   let n = Domain_name.prepend_label_exn raw "_tcp" in
   Domain_name.prepend_label_exn n (Fmt.str "_%d" port)
 
-let with_tlsa ?(port = 853) tls tlsa trie =
-  let name = tlsa_name ~port tls in
-  let v =
+let gen_name cfg =
+  let raw = Domain_name.raw cfg.domain in
+  Domain_name.prepend_label_exn raw "_gen"
+
+let with_tlsa_entries ?(port = 853) cfg entries trie =
+  let set =
     List.fold_left
       (Fun.flip Dns.Rr_map.Tlsa_set.add)
-      Dns.Rr_map.Tlsa_set.empty tlsa
+      Dns.Rr_map.Tlsa_set.empty entries
   in
-  Dns_trie.replace name Dns.Rr_map.Tlsa (tls.ttl, v) trie
+  let name = tlsa_name ~port cfg in
+  Dns_trie.replace name Dns.Rr_map.Tlsa (cfg.ttl, set) trie
 
-let zone ?(port = 853) tls ~tlsa trie =
-  Dns_trie.insert_map (zone tls) trie |> with_tlsa ~port tls [ tlsa ]
+let with_gen ?counts cfg trie =
+  let name = gen_name cfg in
+  let counts = Option.value ~default:[ cfg.count ] counts in
+  let set =
+    List.fold_left
+      (fun acc count -> Dns.Rr_map.Txt_set.add (Fmt.str "%d" count) acc)
+      Dns.Rr_map.Txt_set.empty counts
+  in
+  Dns_trie.replace name Dns.Rr_map.Txt (cfg.ttl, set) trie
+
+let zone ?(port = 853) cfg ~tlsa trie =
+  Dns_trie.insert_map (zone cfg) trie
+  |> with_tlsa_entries ~port cfg [ tlsa ]
+  |> with_gen cfg

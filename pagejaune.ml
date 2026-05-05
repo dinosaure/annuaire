@@ -9,7 +9,7 @@ let ( let* ) = Result.bind
 let guard ~err fn = if fn () then Ok () else Error err
 let msgf fmt = Fmt.kstr (fun msg -> `Msg msg) fmt
 
-let run _ (cidr, gateway, ipv6) features authenticator domain =
+let run _ (cidr, gateway, ipv6) features authenticator domain lifetime seed =
   Mkernel.(run [ rng; Mnet.stack ~name:"service" ?gateway ~ipv6 cidr ])
   @@ fun rng (daemon, tcp, udp) () ->
   let@ () = fun () -> Mirage_crypto_rng_mkernel.kill rng in
@@ -19,7 +19,8 @@ let run _ (cidr, gateway, ipv6) features authenticator domain =
   let primary = Dns_server.Primary.create ~rng root in
   let tls =
     let ipaddr = Ipaddr.V4.Prefix.address cidr in
-    CA.cfg ipaddr domain
+    let lifetime = Ptime.Span.of_int_s (Duration.to_sec lifetime) in
+    CA.cfg ~lifetime ~seed ipaddr domain
   in
   let cfg = Tls.Config.client ~authenticator () in
   let cfg = Result.get_ok cfg in
@@ -213,6 +214,31 @@ let domain =
   let open Arg in
   required & opt (some domain) None & info [ "domain" ] ~doc ~docv:"DOMAIN"
 
+let duration =
+  let parser = Duration.of_string in
+  let pp = Duration.pp in
+  Arg.conv (parser, pp)
+
+let lifetime =
+  let doc = "Validity period of the self-signed TLS certificate." in
+  let open Arg in
+  value
+  & opt duration (Duration.of_day 365)
+  & info [ "tls-lifetime" ] ~doc ~docv:"DURATION"
+
+let seed =
+  let parser str = Base64.decode str in
+  let pp = Fmt.(using Base64.encode_string string) in
+  Arg.conv (parser, pp)
+
+let seed =
+  let doc =
+    "The seed to generate the private key for our TLS certificate (base64 \
+     encoded)."
+  in
+  let open Arg in
+  required & opt (some seed) None & info [ "seed" ] ~doc ~docv:"SEED"
+
 let term =
   let open Term in
   const run
@@ -221,6 +247,8 @@ let term =
   $ features
   $ setup_authenticator
   $ domain
+  $ lifetime
+  $ seed
 
 let cmd =
   let info = Cmd.info "pagejaune" in

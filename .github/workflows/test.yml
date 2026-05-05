@@ -18,6 +18,8 @@ jobs:
           opam-local-packages: |
             *.opam
       - name: Install dependencies
-        run: opam install pagejaune --verbose-on=pagejaune
+        run: opam install annuaire --verbose-on=annuaire
       - name: Check pagejaune.hvt
-        run: file $(opam var bin)/pagejaune.hvt
+        run: |
+          file $(opam var bin)/annuaire
+          file $(opam var bin)/annuaire

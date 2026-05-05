@@ -525,7 +525,7 @@ let on_tcp t =
   in
   go (Miou.orphans ()) (Mnet.TCP.listen t.tcp 53)
 
-let on_tls t state =
+let on_tls t tls =
   let rec go orphans listen =
     let flow = Mnet.TCP.accept t.tcp listen in
     let _ =
@@ -535,14 +535,18 @@ let on_tls t state =
       let qout = Qout.create () in
       let _, (dst, port) = Mnet.TCP.peers flow in
       Hashtbl.replace t.ins (dst, port) qout;
-      let cfg = Atomic.get state in
+      let cfg = MTLS.tls tls in
       let fn () = Mnet_tls.server_of_fd cfg flow in
       begin match with_timeout ~timeout:_2s fn with
       | Ok flow -> incoming_tls_connection t qout flow
-      | Error _ | (exception _) ->
+      | Error `Timeout ->
           Log.debug (fun m ->
-              m "impossible to initiate a TLS connection to %a:%d" Ipaddr.pp dst
-                port);
+              m "connection timeout (2s) with %a:%d" Ipaddr.pp dst port);
+          Hashtbl.remove t.ins (dst, port)
+      | Error (`Exn exn) ->
+          Log.debug (fun m ->
+              m "impossible to initiate a TLS connection to %a:%d: %s" Ipaddr.pp
+                dst port (Printexc.to_string exn));
           Hashtbl.remove t.ins (dst, port)
       end;
       Miou.Ownership.release res
@@ -609,96 +613,16 @@ let kill daemon =
   Miou.cancel daemon.tcp_server;
   Miou.cancel daemon.udp_server;
   Option.iter Miou.cancel daemon.tls_server;
+  Option.iter Miou.cancel daemon.crt_update;
   Miou.cancel daemon.ticker
-
-let monotonic () = Int64.of_int (Mkernel.clock_monotonic ())
-
-let span_to_ns span =
-  let d, ps = Ptime.Span.to_d_ps span in
-  let ns_per_d = 86_400 * 1_000_000_000 in
-  (d * ns_per_d) + Int64.to_int (Int64.div ps 1_000L)
-
-let _1h = Ptime.Span.of_int_s 3600
-
-let renewal_delay validity =
-  let now = Mirage_ptime.now () in
-  let target = Ptime.sub_span validity _1h in
-  let target = Option.value ~default:validity target in
-  let span = Ptime.diff target now in
-  if Ptime.Span.compare span Ptime.Span.zero <= 0 then 0 else span_to_ns span
-
-let publish_tlsa t tls tlsa =
-  Miou.Mutex.protect t.mutex @@ fun () ->
-  let state = t.state in
-  let trie = Dns_resolver.primary_data state in
-  let trie = CA.with_tlsa tls tlsa trie in
-  let now = Mirage_ptime.now () in
-  let mon = Int64.of_int (Mkernel.clock_monotonic ()) in
-  let state, _ = Dns_resolver.with_primary_data state now mon trie in
-  t.state <- state
-
-let renew t state tls initial_tlsa initial_valid_until =
-  let current_tlsa = ref initial_tlsa in
-  let valid_until = ref initial_valid_until in
-  let ttl_ns =
-    Int64.to_int (Int64.mul (Int64.of_int32 tls.CA.ttl) 1_000_000_000L)
-  in
-  let rec go () =
-    let delay = renewal_delay !valid_until in
-    if delay > 0 then Mkernel.sleep delay;
-    Log.info (fun m ->
-        m "renewing TLS certificate for %a" Domain_name.pp tls.domain);
-    match CA.generate tls with
-    | Error (`Msg msg) ->
-        Log.err (fun m -> m "Renewal failed (%s); retrying in 1h" msg);
-        Mkernel.sleep (3_600 * 1_000_000_000);
-        go ()
-    | Ok (server, tlsa', valid_until') ->
-        publish_tlsa t tls [ !current_tlsa; tlsa' ];
-        Log.debug (fun m ->
-            m "published overlap TLSA set, waiting %lds for caches" tls.ttl);
-        if ttl_ns > 0 then Mkernel.sleep ttl_ns;
-        Atomic.set state server;
-        publish_tlsa t tls [ tlsa' ];
-        current_tlsa := tlsa';
-        valid_until := valid_until';
-        Log.info (fun m ->
-            m "TLS certificate renewed (valid until %a)" (Ptime.pp_human ())
-              valid_until');
-        go ()
-  in
-  go ()
 
 let create ?(features = []) ?(ip_protocol = `Ipv4_only) ?tls cfg tcp udp primary
     =
   let rng len = Mirage_crypto_rng.generate len in
   let opportunistic = List.mem `Opportunistic_tls_authoritative features in
-  let tls =
-    match tls with
-    | None -> None
-    | Some tls ->
-        begin match CA.generate tls with
-        | Error (`Msg msg) ->
-            Log.err (fun m -> m "Cannot generate initial certificate: %s" msg);
-            None
-        | Ok (server, tlsa, valid_until) ->
-            Log.debug (fun m -> m "Prepare a DNS-over-TLS server");
-            let trie = Dns_server.Primary.data primary in
-            let trie = CA.zone tls ~tlsa trie in
-            Log.debug (fun m -> m "@[<hov>%a@]" Dns_trie.pp trie);
-            let now = Mirage_ptime.now () in
-            let mon = Int64.of_int (Mkernel.clock_monotonic ()) in
-            let primary, _ =
-              Dns_server.Primary.with_data primary now mon trie
-            in
-            Some (primary, server, tls, tlsa, valid_until)
-        end
-  in
-  let primary = match tls with Some (p, _, _, _, _) -> p | None -> primary in
-  let state =
-    Dns_resolver.create ~ip_protocol features (Mirage_ptime.now ())
-      (monotonic ()) rng primary
-  in
+  let now = Mirage_ptime.now () in
+  let mon = Int64.of_int (Mkernel.clock_monotonic ()) in
+  let state = Dns_resolver.create ~ip_protocol features now mon rng primary in
   let t =
     {
       state
@@ -718,16 +642,21 @@ let create ?(features = []) ?(ip_protocol = `Ipv4_only) ?tls cfg tcp udp primary
   in
   let tcp_server = Miou.async @@ fun () -> on_tcp t in
   let udp_server = Miou.async @@ fun () -> on_udp t in
-  let tls_server, crt_update =
+  let crt_update, tls_server =
+    let get () = Dns_resolver.primary_data t.state in
+    let set trie =
+      let now = Mirage_ptime.now () in
+      let mon = Int64.of_int (Mkernel.clock_monotonic ()) in
+      let state, _ = Dns_resolver.with_primary_data t.state now mon trie in
+      t.state <- state
+    in
+    let fn = MTLS.create ~get ~set in
+    let tls = Option.bind tls fn in
     match tls with
     | None -> (None, None)
-    | Some (_, server, tls, tlsa, valid_until) ->
-        let current = Atomic.make server in
-        let listener = Miou.async @@ fun () -> on_tls t current in
-        let renewer =
-          Miou.async @@ fun () -> renew t current tls tlsa valid_until
-        in
-        (Some listener, Some renewer)
+    | Some (tls, prm0) ->
+        let prm1 = Miou.async @@ fun () -> on_tls t tls in
+        (Some prm0, Some prm1)
   in
   let ticker = Miou.async @@ fun () -> tick _2s t in
-  (t, { tcp_server; udp_server; tls_server; crt_update; ticker })
+  (t, { tcp_server; udp_server; crt_update; tls_server; ticker })
