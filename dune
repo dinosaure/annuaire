@@ -4,6 +4,12 @@
  (wrapped false)
  (libraries tls mirage-ptime dns dns-server x509 mirage-crypto-ec))
 
+(library
+ (name mtls)
+ (modules mTLS)
+ (wrapped false)
+ (libraries ca mkernel miou))
+
 (executable
  (name pagejaune)
  (public_name pagejaune)
@@ -12,6 +18,7 @@
  (link_flags :standard -cclib "-z solo5-abi=hvt")
  (libraries
   ca
+  mtls
   hxd.core
   hxd.string
   ca-certs-nss
@@ -60,7 +67,7 @@
  (action
   (with-stdout-to
    manifest.pagejaune.json
-   (run %{exe:pagejaune.exe} --ipv4=0.0.0.0/24 --domain pagejaune.local))))
+   (run %{exe:pagejaune.exe} --ipv4=0.0.0.0/24 --domain pagejaune.local --seed foo=))))
 
 (executable
  (name pageblanche)
@@ -70,6 +77,7 @@
  (link_flags :standard -cclib "-z solo5-abi=hvt")
  (libraries
   ca
+  mtls
   mnet
   mnet-cli
   mnet-dns
@@ -120,6 +128,6 @@
  (action
   (with-stdout-to
    manifest.pageblanche.json
-   (run %{exe:pageblanche.exe} --ipv4=0.0.0.0/24 --domain pageblanche.local))))
+   (run %{exe:pageblanche.exe} --ipv4=0.0.0.0/24 --domain pageblanche.local --seed foo=))))
 
 (vendored_dirs vendors)
