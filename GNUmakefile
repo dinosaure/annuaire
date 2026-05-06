@@ -33,6 +33,18 @@ pageblanche.hvt: pageblanche.hvt.target
 	@echo " STRIP pageblanche.hvt"
 	@strip $@
 
+annuaire.ban.exe.target: | vendors
+	@echo " BUILD bin/ban.exe"
+	@dune build --root . --profile=release ./bin/ban.exe
+	@echo " DESCR bin/ban.exe"
+	@$(shell dune describe location \
+		 --context default --no-print-directory --root . --display=quiet \
+		 ./bin/ban.exe 1> $@ 2>&1)
+
+annuaire.ban.exe: annuaire.ban.exe.target
+	@echo " COPY ban.exe"
+	@cp $(file < annuaire.exe.target) $@
+
 annuaire.install: pagejaune.hvt pageblanche.hvt
 	@echo " GEN annuaire.install"
 	@ocaml install.ml > $@

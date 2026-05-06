@@ -1,12 +1,3 @@
-module Blk = struct
-  type t = Mkernel.Block.t
-
-  let pagesize = Mkernel.Block.pagesize
-  let read = Mkernel.Block.atomic_read
-  let write = Mkernel.Block.atomic_write
-end
-
-module Bos = Mfat_bos.Make (Blk)
 module RNG = Mirage_crypto_rng.Fortuna
 module Stub = Stub
 

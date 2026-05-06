@@ -55,7 +55,7 @@
  (action
   (with-stdout-to
    manifest.pagejaune.json
-   (run %{exe:pagejaune.exe} --ipv4=0.0.0.0/24 --domain pagejaune.local --seed foo=))))
+   (run %{exe:pagejaune.exe} --ipv4=0.0.0.0/24 --domain foo.local --seed foo=))))
 
 (executable
  (name pageblanche)
@@ -83,7 +83,6 @@
   mirage-crypto-rng-mkernel
   mirage-ptime.solo5
   mnet-happy-eyeballs
-  mfat.bos
   ohex
   x509
   tls)
@@ -117,4 +116,4 @@
  (action
   (with-stdout-to
    manifest.pageblanche.json
-   (run %{exe:pageblanche.exe} --ipv4=0.0.0.0/24 --domain pageblanche.local --seed foo=))))
+   (run %{exe:pageblanche.exe} --ipv4=0.0.0.0/24 --domain foo.local --seed foo=))))
