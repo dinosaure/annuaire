@@ -1,6 +1,8 @@
-let install = {text|bin: [
+let install =
+  {text|bin: [
   "pagejaune.hvt"
   "pageblanche.hvt"
+  "annuaire.ban.exe" {"annuaire.ban"}
 ]
 |text}
 
