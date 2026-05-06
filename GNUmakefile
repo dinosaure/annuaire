@@ -45,7 +45,7 @@ annuaire.ban.exe: annuaire.ban.exe.target
 	@echo " COPY ban.exe"
 	@cp $(file < annuaire.exe.target) $@
 
-annuaire.install: pagejaune.hvt pageblanche.hvt
+annuaire.install: pagejaune.hvt pageblanche.hvt annuaire.ban.exe
 	@echo " GEN annuaire.install"
 	@ocaml install.ml > $@
 
