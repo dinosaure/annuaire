@@ -9,7 +9,7 @@ pagejaune.hvt.target: | vendors
 	@echo " DESCR pagejaune.exe"
 	@$(shell dune describe location \
 		--context solo5 --no-print-directory --root . --display=quiet \
-		./pagejaune.exe 1> $@ 2>&1)
+		./unikernels/pagejaune.exe 1> $@ 2>&1)
 
 pagejaune.hvt: pagejaune.hvt.target
 	@echo " COPY pagejaune.hvt"
@@ -24,7 +24,7 @@ pageblanche.hvt.target: | vendors
 	@echo " DESCR pageblanche.exe"
 	@$(shell dune describe location \
 		--context solo5 --no-print-directory --root . --display=quiet \
-		./pageblanche.exe 1> $@ 2>&1)
+		./unikernels/pageblanche.exe 1> $@ 2>&1)
 
 pageblanche.hvt: pageblanche.hvt.target
 	@echo " COPY pageblanche.hvt"
