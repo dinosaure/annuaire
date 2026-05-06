@@ -43,7 +43,7 @@ annuaire.ban.exe.target: | vendors
 
 annuaire.ban.exe: annuaire.ban.exe.target
 	@echo " COPY ban.exe"
-	@cp $(file < annuaire.exe.target) $@
+	@cp $(file < annuaire.ban.exe.target) $@
 
 annuaire.install: pagejaune.hvt pageblanche.hvt annuaire.ban.exe
 	@echo " GEN annuaire.install"
