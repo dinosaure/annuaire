@@ -5,8 +5,8 @@
  (modules pagejaune resolver)
  (link_flags :standard -cclib "-z solo5-abi=hvt")
  (libraries
-  ca
-  mtls
+  annuaire.ca
+  annuaire.tlsa
   hxd.core
   hxd.string
   ca-certs-nss
@@ -64,8 +64,8 @@
  (modules pageblanche stub pin)
  (link_flags :standard -cclib "-z solo5-abi=hvt")
  (libraries
-  ca
-  mtls
+  annuaire.ca
+  annuaire.tlsa
   annuaire.trie
   mnet
   mnet-cli

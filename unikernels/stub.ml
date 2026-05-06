@@ -108,7 +108,7 @@ let with_tls t tls ~handler tcp port =
       let finally = Mnet.TCP.close in
       let res0 = Miou.Ownership.create ~finally flow in
       Miou.Ownership.own res0;
-      let cfg = MTLS.tls tls in
+      let cfg = Tlsa.tls tls in
       let fn () = Mnet_tls.server_of_fd cfg flow in
       match with_timeout ~timeout:_2s fn with
       | Error (`Timeout | `Exn _) ->
@@ -424,7 +424,7 @@ let create cfg ?(with_reserved = true) ~ban ?tls tcp udp he nameservers =
   let tls_server, crt_update =
     let get () = t.server.Dns_server.data in
     let set trie = t.server <- Dns_server.with_data t.server trie in
-    let fn = MTLS.create ~get ~set in
+    let fn = Tlsa.create ~get ~set in
     let tls = Option.bind tls fn in
     match tls with
     | None -> (None, None)

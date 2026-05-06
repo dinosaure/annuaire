@@ -13,9 +13,9 @@
  (libraries tls mirage-ptime dns dns-server x509 mirage-crypto-ec))
 
 (library
- (name mtls)
- (public_name annuaire.mtls)
- (modules mTLS)
+ (name tlsa)
+ (public_name annuaire.tlsa)
+ (modules tlsa)
  (wrapped false)
  (libraries ca mkernel miou))
 

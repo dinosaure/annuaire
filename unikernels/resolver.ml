@@ -535,7 +535,7 @@ let on_tls t tls =
       let qout = Qout.create () in
       let _, (dst, port) = Mnet.TCP.peers flow in
       Hashtbl.replace t.ins (dst, port) qout;
-      let cfg = MTLS.tls tls in
+      let cfg = Tlsa.tls tls in
       let fn () = Mnet_tls.server_of_fd cfg flow in
       begin match with_timeout ~timeout:_2s fn with
       | Ok flow -> incoming_tls_connection t qout flow
@@ -652,7 +652,7 @@ let create ?(features = []) ?(ip_protocol = `Ipv4_only) ?cache_size ?tls cfg tcp
       let state, _ = Dns_resolver.with_primary_data t.state now mon trie in
       t.state <- state
     in
-    let fn = MTLS.create ~get ~set in
+    let fn = Tlsa.create ~get ~set in
     let tls = Option.bind tls fn in
     match tls with
     | None -> (None, None)
