@@ -1,0 +1,5 @@
+(executable
+ (name ban)
+ (package annuaire)
+ (public_name annuaire.ban)
+ (libraries ipaddr domain-name fpath cmdliner annuaire.trie))

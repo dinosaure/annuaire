@@ -616,13 +616,15 @@ let kill daemon =
   Option.iter Miou.cancel daemon.crt_update;
   Miou.cancel daemon.ticker
 
-let create ?(features = []) ?(ip_protocol = `Ipv4_only) ?tls cfg tcp udp primary
-    =
+let create ?(features = []) ?(ip_protocol = `Ipv4_only) ?cache_size ?tls cfg tcp
+    udp primary =
   let rng len = Mirage_crypto_rng.generate len in
   let opportunistic = List.mem `Opportunistic_tls_authoritative features in
   let now = Mirage_ptime.now () in
   let mon = Int64.of_int (Mkernel.clock_monotonic ()) in
-  let state = Dns_resolver.create ~ip_protocol features now mon rng primary in
+  let state =
+    Dns_resolver.create ~ip_protocol ?cache_size features now mon rng primary
+  in
   let t =
     {
       state

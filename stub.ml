@@ -44,7 +44,7 @@ type t = {
     mutex: Miou.Mutex.t
   ; mutable server: Dns_server.t
   ; clients: Mnet_dns.t list
-  ; ban: Ban.t
+  ; ban: Mkernel.Block.t Cachet.t
 }
 
 let with_tcp t ~handler tcp port =
@@ -376,7 +376,7 @@ let handler t proto ipaddr str =
       let name = fst question in
       let reply =
         match data with
-        | `Query when Ban.is_blocked t.ban name ->
+        | `Query when Trie.exists t.ban (Domain_name.to_string name) ->
             Log.info (fun m -> m "Blocked %a" Domain_name.pp name);
             Some (blocked_reply hdr question proto, Dns.Rcode.NXDomain)
         | _ ->
@@ -394,8 +394,7 @@ type daemon = {
   ; crt_update: unit Miou.t option
 }
 
-let create cfg ?(with_reserved = true) ?(ban = Ban.empty) ?tls tcp udp he
-    nameservers =
+let create cfg ?(with_reserved = true) ~ban ?tls tcp udp he nameservers =
   let rng = Mirage_crypto_rng.generate in
   let primary = Dns_server.Primary.create ~rng Dns_trie.empty in
   let primary =
@@ -420,8 +419,6 @@ let create cfg ?(with_reserved = true) ?(ban = Ban.empty) ?tls tcp udp he
   let clients = List.map fn nameservers in
   Logs.info (fun m -> m "Use %d nameserver(s)" (List.length clients));
   let t = { server; clients; mutex; ban } in
-  if Ban.cardinal ban > 0 then
-    Log.info (fun m -> m "Loaded %d ban entries" (Ban.cardinal ban));
   let tcp_server = Miou.async @@ fun () -> with_tcp t ~handler tcp cfg.port in
   let udp_server = Miou.async @@ fun () -> with_udp t ~handler udp cfg.port in
   let tls_server, crt_update =

@@ -9,7 +9,8 @@ let ( let* ) = Result.bind
 let guard ~err fn = if fn () then Ok () else Error err
 let msgf fmt = Fmt.kstr (fun msg -> `Msg msg) fmt
 
-let run _ (cidr, gateway, ipv6) features authenticator domain lifetime seed =
+let run _ (cidr, gateway, ipv6) cache_size features authenticator domain
+    lifetime seed =
   Mkernel.(run [ rng; Mnet.stack ~name:"service" ?gateway ~ipv6 cidr ])
   @@ fun rng (daemon, tcp, udp) () ->
   let@ () = fun () -> Mirage_crypto_rng_mkernel.kill rng in
@@ -24,7 +25,9 @@ let run _ (cidr, gateway, ipv6) features authenticator domain lifetime seed =
   in
   let cfg = Tls.Config.client ~authenticator () in
   let cfg = Result.get_ok cfg in
-  let _resolver, daemon = Resolver.create ~features ~tls cfg tcp udp primary in
+  let _resolver, daemon =
+    Resolver.create ~features ~cache_size ~tls cfg tcp udp primary
+  in
   let@ () = fun () -> Resolver.kill daemon in
   forever ()
 
@@ -239,11 +242,24 @@ let seed =
   let open Arg in
   required & opt (some seed) None & info [ "seed" ] ~doc ~docv:"SEED"
 
+let cache_size =
+  let doc = "The size of the DNS cache." in
+  let parser str =
+    match int_of_string_opt str with
+    | Some n when n <= 0 -> error_msgf "Invalid cache-size (negative number)"
+    | Some n -> Ok n
+    | None -> error_msgf "Invalid number: %S" str
+  in
+  let positive = Arg.conv (parser, Fmt.int) in
+  let open Arg in
+  value & opt positive 10_0000 & info [ "cache-size" ] ~doc ~docv:"NUMBER"
+
 let term =
   let open Term in
   const run
   $ setup_logs
   $ Mnet_cli.setup
+  $ cache_size
   $ features
   $ setup_authenticator
   $ domain

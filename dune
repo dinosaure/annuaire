@@ -78,6 +78,7 @@
  (libraries
   ca
   mtls
+  annuaire.trie
   mnet
   mnet-cli
   mnet-dns

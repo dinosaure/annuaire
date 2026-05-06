@@ -20,51 +20,30 @@ let guard ~err fn = if fn () then Ok () else Error err
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 let msgf fmt = Fmt.kstr (fun msg -> `Msg msg) fmt
 
-let fat32 ~name =
+let cachet ~name =
   let fn blk () =
-    let v = Bos.create blk in
-    let v = Result.map_error (fun (`Msg msg) -> msg) v in
-    Result.error_to_failure v
+    let pagesize = Mkernel.Block.pagesize blk in
+    let map blk ~pos len =
+      let bstr = Bstr.create len in
+      Mkernel.Block.read blk ~src_off:pos bstr;
+      bstr
+    in
+    Cachet.make ~pagesize ~map blk
   in
-  Mkernel.map fn [ Mkernel.block name ]
-
-let banlist fs =
-  let is_txt p = Fpath.has_ext ".txt" p in
-  let process_file acc path =
-    match Bos.File.read_lines fs path with
-    | Error (`Msg msg) ->
-        Logs.warn (fun m -> m "skip %a: %s" Fpath.pp path msg);
-        acc
-    | Ok lines ->
-        let n0 = Ban.cardinal acc in
-        let acc = List.fold_left Ban.add_line acc lines in
-        Logs.info (fun m ->
-            m "loaded %a (+%d entries)" Fpath.pp path (Ban.cardinal acc - n0));
-        acc
-  in
-  let elements = `Files
-  and traverse = `Sat (fun _ _ -> Ok true)
-  and fn path acc = if is_txt path then process_file acc path else acc in
-  let acc = Bos.fold ~elements ~traverse fs fn Ban.empty [ Fpath.v "lists/" ] in
-  match acc with
-  | Ok set -> set
-  | Error (`Msg msg) ->
-      Logs.warn (fun m -> m "Could not enumerate ban lists: %s" msg);
-      Ban.empty
+  Mkernel.(map fn [ block name ])
 
 let devices ?gateway ~ipv6 cidr =
   let open Mkernel in
-  [ rng; Mnet.stack ~name:"service" ?gateway ~ipv6 cidr; fat32 ~name:"lst" ]
+  [ rng; Mnet.stack ~name:"service" ?gateway ~ipv6 cidr; cachet ~name:"ban" ]
 
 let run _ (cidr, gateway, ipv6) recursive nameservers happy_eyeballs domain
     lifetime seed =
   Mkernel.run (devices ?gateway ~ipv6 cidr)
-  @@ fun rng (daemon, tcp, udp) fs () ->
+  @@ fun rng (daemon, tcp, udp) ban () ->
   let@ () = fun () -> Mirage_crypto_rng_mkernel.kill rng in
   let@ () = fun () -> Mnet.kill daemon in
   let hed, he = Mnet_happy_eyeballs.create ~happy_eyeballs tcp in
   let@ () = fun () -> Mnet_happy_eyeballs.kill hed in
-  let ban = banlist fs in
   let cfg = Stub.config 53 in
   let tls =
     let ipaddr = Ipaddr.V4.Prefix.address cidr in
