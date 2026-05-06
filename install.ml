@@ -3,6 +3,7 @@ let install =
   "pagejaune.hvt"
   "pageblanche.hvt"
   "annuaire.ban.exe" {"annuaire.ban"}
+  "annuaire.gen.exe" {"annuaire.gen"}
 ]
 |text}
 

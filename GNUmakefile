@@ -45,7 +45,19 @@ annuaire.ban.exe: annuaire.ban.exe.target
 	@echo " COPY ban.exe"
 	@cp $(file < annuaire.ban.exe.target) $@
 
-annuaire.install: pagejaune.hvt pageblanche.hvt annuaire.ban.exe
+annuaire.gen.exe.target: | vendors
+	@echo " BUILD bin/gen.exe"
+	@dune build --root . --profile=release ./bin/gen.exe
+	@echo " DESCR bin/gen.exe"
+	@$(shell dune describe location \
+		 --context default --no-print-directory --root . --display=quiet \
+		 ./bin/gen.exe 1> $@ 2>&1)
+
+annuaire.gen.exe: annuaire.gen.exe.target
+	@echo " COPY gen.exe"
+	@cp $(file < annuaire.gen.exe.target) $@
+
+annuaire.install: pagejaune.hvt pageblanche.hvt annuaire.ban.exe annuaire.gen.exe
 	@echo " GEN annuaire.install"
 	@ocaml install.ml > $@
 
