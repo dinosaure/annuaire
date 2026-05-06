@@ -19,7 +19,7 @@ jobs:
             *.opam
       - name: Install dependencies
         run: opam install annuaire --verbose-on=annuaire
-      - name: Check pagejaune.hvt
+      - name: Check page{blanche,jaune}.hvt
         run: |
-          file $(opam var bin)/annuaire
-          file $(opam var bin)/annuaire
+          file $(opam var bin)/pageblanche.hvt
+          file $(opam var bin)/pagejaune.hvt

@@ -1,0 +1,120 @@
+(executable
+ (name pagejaune)
+ (public_name pagejaune)
+ (package annuaire)
+ (modules pagejaune resolver)
+ (link_flags :standard -cclib "-z solo5-abi=hvt")
+ (libraries
+  ca
+  mtls
+  hxd.core
+  hxd.string
+  ca-certs-nss
+  dns-server
+  dns-resolver
+  dns-resolver.shared
+  mirage-ptime.solo5
+  mkernel
+  mnet
+  mnet-tls
+  mnet-cli
+  mirage-crypto-rng-mkernel
+  cmdliner
+  logs.cli
+  logs.fmt
+  fmt.cli
+  re
+  gmp)
+ (foreign_stubs
+  (language c)
+  (names manifest.pagejaune)))
+
+(rule
+ (targets manifest.pagejaune.c)
+ (enabled_if
+  (= %{context_name} "default"))
+ (action
+  (write-file manifest.pagejaune.c "")))
+
+(rule
+ (targets manifest.pagejaune.c)
+ (deps manifest.pagejaune.json)
+ (enabled_if
+  (= %{context_name} "solo5"))
+ (action
+  (run
+   solo5-elftool
+   gen-manifest
+   manifest.pagejaune.json
+   manifest.pagejaune.c)))
+
+(rule
+ (targets manifest.pagejaune.json)
+ (enabled_if
+  (= %{context_name} "solo5"))
+ (action
+  (with-stdout-to
+   manifest.pagejaune.json
+   (run %{exe:pagejaune.exe} --ipv4=0.0.0.0/24 --domain pagejaune.local --seed foo=))))
+
+(executable
+ (name pageblanche)
+ (public_name pageblanche)
+ (package annuaire)
+ (modules pageblanche stub pin)
+ (link_flags :standard -cclib "-z solo5-abi=hvt")
+ (libraries
+  ca
+  mtls
+  annuaire.trie
+  mnet
+  mnet-cli
+  mnet-dns
+  mnet-tls
+  dns-server
+  dns-resolver.shared
+  dns-tsig
+  dns-certify
+  logs.cli
+  fmt.cli
+  logs.fmt
+  re
+  gmp
+  mirage-crypto-rng-mkernel
+  mirage-ptime.solo5
+  mnet-happy-eyeballs
+  mfat.bos
+  ohex
+  x509
+  tls)
+ (foreign_stubs
+  (language c)
+  (names manifest.pageblanche)))
+
+(rule
+ (targets manifest.pageblanche.c)
+ (enabled_if
+  (= %{context_name} "default"))
+ (action
+  (write-file manifest.pageblanche.c "")))
+
+(rule
+ (targets manifest.pageblanche.c)
+ (deps manifest.pageblanche.json)
+ (enabled_if
+  (= %{context_name} "solo5"))
+ (action
+  (run
+   solo5-elftool
+   gen-manifest
+   manifest.pageblanche.json
+   manifest.pageblanche.c)))
+
+(rule
+ (targets manifest.pageblanche.json)
+ (enabled_if
+  (= %{context_name} "solo5"))
+ (action
+  (with-stdout-to
+   manifest.pageblanche.json
+   (run %{exe:pageblanche.exe} --ipv4=0.0.0.0/24 --domain pageblanche.local --seed foo=))))

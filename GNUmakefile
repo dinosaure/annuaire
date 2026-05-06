@@ -5,7 +5,7 @@ vendors:
 
 pagejaune.hvt.target: | vendors
 	@echo " BUILD pagejaune.exe"
-	@dune build --root . --profile=release ./pagejaune.exe
+	@dune build --root . --profile=release ./unikernels/pagejaune.exe
 	@echo " DESCR pagejaune.exe"
 	@$(shell dune describe location \
 		--context solo5 --no-print-directory --root . --display=quiet \
@@ -20,7 +20,7 @@ pagejaune.hvt: pagejaune.hvt.target
 
 pageblanche.hvt.target: | vendors
 	@echo " BUILD pageblanche.exe"
-	@dune build --root . --profile=release ./pageblanche.exe
+	@dune build --root . --profile=release ./unikernels/pageblanche.exe
 	@echo " DESCR pageblanche.exe"
 	@$(shell dune describe location \
 		--context solo5 --no-print-directory --root . --display=quiet \

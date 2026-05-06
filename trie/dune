@@ -1,6 +1,0 @@
-(library
- (name trie)
- (public_name annuaire.trie)
- (wrapped false)
- (modules trie)
- (libraries fmt cachet))

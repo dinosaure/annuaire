@@ -1,5 +1,6 @@
 let install = {text|bin: [
   "pagejaune.hvt"
+  "pageblanche.hvt"
 ]
 |text}
 

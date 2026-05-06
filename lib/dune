@@ -1,0 +1,22 @@
+(library
+ (name trie)
+ (public_name annuaire.trie)
+ (modules trie)
+ (wrapped false)
+ (libraries fmt cachet))
+
+(library
+ (name ca)
+ (public_name annuaire.ca)
+ (modules CA)
+ (wrapped false)
+ (libraries tls mirage-ptime dns dns-server x509 mirage-crypto-ec))
+
+(library
+ (name mtls)
+ (public_name annuaire.mtls)
+ (modules mTLS)
+ (wrapped false)
+ (libraries ca mkernel miou))
+
+
