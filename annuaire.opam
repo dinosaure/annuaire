@@ -23,6 +23,7 @@ depends: [
   "mkernel"
   "dns-resolver"
   "dns-server"
+  "happy-eyeballs-miou-unix"
 ]
 build: [
   [make "all"]
