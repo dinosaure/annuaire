@@ -17,7 +17,6 @@ depends: [
   "mnet-cli"
   "cmdliner"
   "re"
-  "mfat"
   "ca-certs-nss"
   "mirage-ptime"
   "mkernel"
@@ -31,11 +30,5 @@ build: [
 synopsis: "An unikernel which serve HTTP contents"
 pin-depends: [
   [ "zarith.dev" "git+https://github.com/mirage/Zarith.git#df8969d9bb95cffca13e31a615189ab27ada0684" ]
-  [ "mfat.dev" "git+https://github.com/robur-coop/mfat.git#5d6aa2dd6067133c76b0f8f8b8cca4faf4eb9104" ]
-  [ "miou.dev" "git+https://github.com/robur-coop/miou.git#c639c4dbe594d2092ec4c80786b8d5ea486b600f" ]
-  [ "mnet.dev" "git+https://github.com/robur-coop/mnet.git#5f98dc8e8166cc047ef0d59fccd26ec7fb02eff6" ]
-  [ "mnet-tls.dev" "git+https://github.com/robur-coop/mnet.git#5f98dc8e8166cc047ef0d59fccd26ec7fb02eff6" ]
-  [ "mnet-dns.dev" "git+https://github.com/robur-coop/mnet.git#5f98dc8e8166cc047ef0d59fccd26ec7fb02eff6" ]
-  [ "mnet-happy-eyeballs.dev" "git+https://github.com/robur-coop/mnet.git#5f98dc8e8166cc047ef0d59fccd26ec7fb02eff6" ]
-  [ "mnet-cli.dev" "git+https://github.com/robur-coop/mnet.git#5f98dc8e8166cc047ef0d59fccd26ec7fb02eff6" ]
+  [ "mkernel.dev" "git+https://github.com/robur-coop/mkernel.git#2024fa013d2a418787b4289bdccfafde1238ee68" ]
 ]

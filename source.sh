@@ -15,5 +15,4 @@
 [ ! -d "vendors/ca-certs-nss" ] && opam source ca-certs-nss --dir vendors/ca-certs-nss
 [ ! -d "vendors/mirage-ptime" ] && opam source mirage-ptime --dir vendors/mirage-ptime
 [ ! -d "vendors/zarith" ] && opam source zarith --dir vendors/zarith
-[ ! -d "vendors/mfat" ] && opam source mfat --dir vendors/mfat
 [ ! -d "vendors/cachet" ] && opam source cachet --dir vendors/cachet
