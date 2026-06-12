@@ -3,13 +3,34 @@ module Stub = Stub
 
 let _2s = 2_000_000_000
 let ( let@ ) finally fn = Fun.protect ~finally fn
-let rec forever () = Mkernel.sleep _2s; Gc.compact (); forever ()
 let rng () = Mirage_crypto_rng_mkernel.initialize (module RNG)
 let rng = Mkernel.map rng Mkernel.[]
 let ( let* ) = Result.bind
 let guard ~err fn = if fn () then Ok () else Error err
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 let msgf fmt = Fmt.kstr (fun msg -> `Msg msg) fmt
+
+let compact () =
+  let rec go ~minor ~hwm =
+    Mkernel.sleep _2s;
+    let stat = Gc.quick_stat () in
+    let busy = stat.Gc.minor_collections - minor > 2 in
+    (* NOTE(dinosaure): here, we call [Gc.compact] when:
+       - our unikernel is not too much busy with minor collections ([<= 2])
+         since our last iteration
+       - we have more [heap_words] than expected (more than 1,5 times from our 
+         last iterations)
+
+       We monitor these values every 2 seconds. *)
+    if (not busy) && stat.Gc.heap_words > hwm then begin
+      Gc.compact ();
+      let stat = Gc.quick_stat () in
+      go ~minor:stat.Gc.minor_collections ~hwm:(stat.Gc.heap_words * 3 / 2)
+    end
+    else go ~minor:stat.Gc.minor_collections ~hwm
+  in
+  let stat = Gc.quick_stat () in
+  go ~minor:stat.Gc.minor_collections ~hwm:(stat.Gc.heap_words * 3 / 2)
 
 let cachet ~name =
   let fn blk () =
@@ -52,7 +73,7 @@ let run _ (cidr, gateway, ipv6) recursive nameservers happy_eyeballs domain
   let@ () = fun () -> Option.iter Miou.cancel refresher in
   let _stub, daemon = Stub.create cfg ~ban ~tls tcp udp he nameservers in
   let@ () = fun () -> Stub.kill daemon in
-  forever ()
+  compact ()
 
 open Cmdliner
 
