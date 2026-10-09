@@ -23,6 +23,9 @@ depends: [
   "dns-resolver"
   "dns-server"
   "happy-eyeballs-miou-unix"
+  "mnet-happy-eyeballs"
+  "mnet-dns"
+  "dns-tsig"
   "unic" {build}
   "mfetch" {build}
 ]
