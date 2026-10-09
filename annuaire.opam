@@ -23,6 +23,8 @@ depends: [
   "dns-resolver"
   "dns-server"
   "happy-eyeballs-miou-unix"
+  "unic" {build}
+  "mfetch" {build}
 ]
 build: [
   [make "all"]
@@ -30,5 +32,4 @@ build: [
 synopsis: "An unikernel which serve HTTP contents"
 pin-depends: [
   [ "zarith.dev" "git+https://github.com/mirage/Zarith.git#df8969d9bb95cffca13e31a615189ab27ada0684" ]
-  [ "mkernel.dev" "git+https://github.com/robur-coop/mkernel.git#2024fa013d2a418787b4289bdccfafde1238ee68" ]
 ]
