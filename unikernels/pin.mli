@@ -25,4 +25,4 @@ val launch :
   -> Ipaddr.t
   -> [ `host ] Domain_name.t
   -> string
-  -> ((Dns.proto * Mnet_cli.nameserver) * unit Miou.t, [> error ]) result
+  -> ((Dns.proto * Mnet_dns_cli.nameserver) * unit Miou.t, [> error ]) result

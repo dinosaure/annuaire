@@ -34,7 +34,7 @@ let compact () =
 
 let cachet ~name =
   let fn blk () =
-    let pagesize = Mkernel.Block.pagesize blk in
+    let pagesize = Mkernel.Block.sector_size blk in
     let map blk ~pos len =
       let bstr = Bstr.create len in
       Mkernel.Block.read blk ~src_off:pos bstr;
@@ -44,13 +44,12 @@ let cachet ~name =
   in
   Mkernel.(map fn [ block name ])
 
-let devices ?gateway ~ipv6 cidr =
-  let open Mkernel in
-  [ rng; Mnet.stack ~name:"service" ?gateway ~ipv6 cidr; cachet ~name:"ban" ]
+let first_cidrv4 lst =
+  let fn = function Ipaddr.V4 _ -> true | _ -> false in
+  List.find fn lst |> function Ipaddr.V4 cidrv4 -> cidrv4 | _ -> assert false
 
-let run _ (cidr, gateway, ipv6) recursive nameservers happy_eyeballs domain
-    lifetime seed =
-  Mkernel.run (devices ?gateway ~ipv6 cidr)
+let run _ stack recursive nameservers happy_eyeballs domain lifetime seed =
+  Mkernel.run [ rng; stack; cachet ~name:"ban" ]
   @@ fun rng (daemon, tcp, udp) ban () ->
   let@ () = fun () -> Mirage_crypto_rng_mkernel.kill rng in
   let@ () = fun () -> Mnet.kill daemon in
@@ -58,7 +57,8 @@ let run _ (cidr, gateway, ipv6) recursive nameservers happy_eyeballs domain
   let@ () = fun () -> Mnet_happy_eyeballs.kill hed in
   let cfg = Stub.config 53 in
   let tls =
-    let ipaddr = Ipaddr.V4.Prefix.address cidr in
+    let addresses = Mnet.addresses daemon in
+    let ipaddr = Ipaddr.V4.Prefix.address (first_cidrv4 addresses) in
     let lifetime = Ptime.Span.of_int_s (Duration.to_sec lifetime) in
     CA.cfg ~lifetime ~seed ipaddr domain
   in
@@ -153,7 +153,7 @@ let setup_logs =
 
 let setup_happy_eyeballs
     {
-      Mnet_cli.aaaa_timeout
+      Mnet_happy_eyeballs_cli.aaaa_timeout
     ; connect_delay
     ; connect_timeout
     ; resolve_timeout
@@ -166,7 +166,7 @@ let setup_happy_eyeballs
 
 let setup_happy_eyeballs =
   let open Term in
-  const setup_happy_eyeballs $ Mnet_cli.setup_happy_eyeballs
+  const setup_happy_eyeballs $ Mnet_happy_eyeballs_cli.setup
 
 let domain =
   let local = Domain_name.of_string_exn "local" in
@@ -258,9 +258,9 @@ let term =
   let open Term in
   const run
   $ setup_logs
-  $ Mnet_cli.setup
+  $ Mnet_cli.setup "service"
   $ recursive
-  $ Mnet_cli.nameservers ()
+  $ Mnet_dns_cli.nameservers ()
   $ setup_happy_eyeballs
   $ domain
   $ lifetime

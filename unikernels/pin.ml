@@ -53,7 +53,7 @@ let counts_of_txts set =
 
 let ask_counts udp he ipaddr domain =
   let nameservers = (`Tcp, [ `Plaintext (ipaddr, 53) ]) in
-  let dns = Mnet_dns.create ~nameservers (udp, he) in
+  let dns = Mnet_dns.create ~nameservers (Mnet_dns.Transport.stack udp he) in
   let raw = Domain_name.raw domain in
   let gen = Domain_name.prepend_label_exn raw "_gen" in
   Logs.debug (fun m -> m "Asking %a" Domain_name.pp gen);
@@ -124,6 +124,6 @@ let launch udp he ipaddr domain seed =
     in
     (nameservers, tls)
   in
-  let dns = Mnet_dns.create ~nameservers (udp, he) in
+  let dns = Mnet_dns.create ~nameservers (Mnet_dns.Transport.stack udp he) in
   let prm = Miou.async @@ fun () -> renew pin dns _gen seed in
   Ok (tls, prm)

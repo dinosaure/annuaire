@@ -2,11 +2,12 @@ let msgf fmt = Fmt.kstr (fun msg -> `Msg msg) fmt
 
 let prefix =
   X509.Distinguished_name.
-    [ Relative_distinguished_name.singleton (CN "Annuaire") ]
+    [ Relative_distinguished_name.singleton (CN (Common_name.v "Annuaire")) ]
 
 let cacert_dn =
   let open X509.Distinguished_name in
-  prefix @ [ Relative_distinguished_name.singleton (CN "Annuaire") ]
+  prefix
+  @ [ Relative_distinguished_name.singleton (CN (Common_name.v "Annuaire")) ]
 
 let _365d = Ptime.Span.v (365, 0L)
 let _30d = Ptime.Span.v (30, 0L)

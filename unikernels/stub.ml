@@ -47,10 +47,16 @@ type t = {
   ; ban: Mkernel.Block.t Cachet.t
 }
 
+(* NOTE(dinosaure): [Mnet.TCP.input] fills its internal ring-buffer only when
+   it is empty, and with what [utcp] holds into its receive queue. This queue
+   can not be larger than [Params.so_rcvbuf] (65535 bytes). A limit of
+   [0x10000] bytes ensures that we never reach it. *)
+let kind = Mnet.TCP.buffer ~limit:(Some 0x10000) 0x1000
+
 let with_tcp t ~handler tcp port =
   let rec go orphans listen =
     clean_up orphans;
-    let flow = Mnet.TCP.accept tcp listen in
+    let flow = Mnet.TCP.accept ~kind tcp listen in
     let _ =
       Miou.async ~orphans @@ fun () ->
       let _, (dst, _) = Mnet.TCP.peers flow in
@@ -59,10 +65,10 @@ let with_tcp t ~handler tcp port =
       Miou.Ownership.own res;
       let rec go () =
         let len = Bytes.create 2 in
-        Mnet.TCP.really_read flow len;
+        Mnet.TCP.really_input flow len;
         let len = Bytes.get_uint16_be len 0 in
         let buf = Bytes.create len in
-        Mnet.TCP.really_read flow buf;
+        Mnet.TCP.really_input flow buf;
         match handler t `Tcp dst (Bytes.unsafe_to_string buf) with
         | None -> go ()
         | Some (_ttl, str) ->
@@ -101,7 +107,7 @@ let with_udp t ~handler udp port =
 let with_tls t tls ~handler tcp port =
   let rec go orphans listen =
     clean_up orphans;
-    let flow = Mnet.TCP.accept tcp listen in
+    let flow = Mnet.TCP.accept ~kind:Mnet.TCP.direct tcp listen in
     let _ =
       Miou.async ~orphans @@ fun () ->
       let _, (dst, dport) = Mnet.TCP.peers flow in
@@ -414,7 +420,8 @@ let create cfg ?(with_reserved = true) ~ban ?tls tcp udp he nameservers =
     and edns = cfg.edns
     and timeout = cfg.timeout in
     Mnet_dns.create ?cache_size ?edns ?timeout
-      ~nameservers:(proto, [ nameserver ]) (udp, he)
+      ~nameservers:(proto, [ nameserver ])
+      (Mnet_dns.Transport.stack udp he)
   in
   let clients = List.map fn nameservers in
   Logs.info (fun m -> m "Use %d nameserver(s)" (List.length clients));

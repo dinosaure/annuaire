@@ -184,10 +184,19 @@ module type FLOW = sig
   val write : flow -> ?off:int -> ?len:int -> string -> unit
 end
 
+(* NOTE(dinosaure): [Mnet.TCP.input] fills its internal ring-buffer only when
+   it is empty, and with what [utcp] holds into its receive queue. This queue
+   can not be larger than [Params.so_rcvbuf] (65535 bytes). A limit of
+   [0x10000] bytes ensures that we never reach it. *)
+let kind = Mnet.TCP.buffer ~limit:(Some 0x10000) 0x1000
+
 module A = struct
   include Mnet.TCP
 
-  let connect t (dst, port) = connect t.tcp (dst, port)
+  type flow = Mnet.TCP.buffer Mnet.TCP.flow
+
+  let really_read = really_input
+  let connect t (dst, port) = connect ~kind t.tcp (dst, port)
 end
 
 module B = struct
@@ -199,7 +208,7 @@ module B = struct
 
   let connect t (dst, port) =
     let fn () =
-      let flow = Mnet.TCP.connect t.tcp (dst, port) in
+      let flow = Mnet.TCP.connect ~kind:Mnet.TCP.direct t.tcp (dst, port) in
       client_of_fd t.cfg flow
     in
     match with_timeout ~timeout:_1s fn with
@@ -513,7 +522,7 @@ let rec clean_up orphans =
 let on_tcp t =
   let rec go orphans listen =
     clean_up orphans;
-    let flow = Mnet.TCP.accept t.tcp listen in
+    let flow = Mnet.TCP.accept ~kind t.tcp listen in
     let _, (dst, port) = Mnet.TCP.peers flow in
     Log.debug (fun m ->
         m "new TCP/DNS connection from %a:%d" Ipaddr.pp dst port);
@@ -527,7 +536,7 @@ let on_tcp t =
 
 let on_tls t tls =
   let rec go orphans listen =
-    let flow = Mnet.TCP.accept t.tcp listen in
+    let flow = Mnet.TCP.accept ~kind:Mnet.TCP.direct t.tcp listen in
     let _ =
       Miou.async ~orphans @@ fun () ->
       let res = Miou.Ownership.create ~finally:Mnet.TCP.close flow in

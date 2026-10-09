@@ -30,17 +30,20 @@ let compact () =
   let stat = Gc.quick_stat () in
   go ~minor:stat.Gc.minor_collections ~hwm:(stat.Gc.heap_words * 3 / 2)
 
-let run _ (cidr, gateway, ipv6) cache_size features authenticator domain
-    lifetime seed =
-  Mkernel.(run [ rng; Mnet.stack ~name:"service" ?gateway ~ipv6 cidr ])
-  @@ fun rng (daemon, tcp, udp) () ->
+let first_cidrv4 lst =
+  let fn = function Ipaddr.V4 _ -> true | _ -> false in
+  List.find fn lst |> function Ipaddr.V4 cidrv4 -> cidrv4 | _ -> assert false
+
+let run _ stack cache_size features authenticator domain lifetime seed =
+  Mkernel.(run [ rng; stack ]) @@ fun rng (daemon, tcp, udp) () ->
   let@ () = fun () -> Mirage_crypto_rng_mkernel.kill rng in
   let@ () = fun () -> Mnet.kill daemon in
   let rng = Mirage_crypto_rng.generate in
   let root = Dns_resolver_shared.Root.reserved in
   let primary = Dns_server.Primary.create ~rng root in
   let tls =
-    let ipaddr = Ipaddr.V4.Prefix.address cidr in
+    let addresses = Mnet.addresses daemon in
+    let ipaddr = Ipaddr.V4.Prefix.address (first_cidrv4 addresses) in
     let lifetime = Ptime.Span.of_int_s (Duration.to_sec lifetime) in
     CA.cfg ~lifetime ~seed ipaddr domain
   in
@@ -279,7 +282,7 @@ let term =
   let open Term in
   const run
   $ setup_logs
-  $ Mnet_cli.setup
+  $ Mnet_cli.setup "service"
   $ cache_size
   $ features
   $ setup_authenticator
