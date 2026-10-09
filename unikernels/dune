@@ -83,6 +83,8 @@
   mirage-crypto-rng-mkernel
   mirage-ptime.solo5
   mnet-happy-eyeballs
+  mnet-happy-eyeballs.cli
+  mnet-dns.cli
   ohex
   x509
   tls)
