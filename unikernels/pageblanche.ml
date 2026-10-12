@@ -48,14 +48,16 @@ let first_cidrv4 lst =
   let fn = function Ipaddr.V4 _ -> true | _ -> false in
   List.find fn lst |> function Ipaddr.V4 cidrv4 -> cidrv4 | _ -> assert false
 
-let run _ stack recursive nameservers happy_eyeballs domain lifetime seed =
+let run _ stack recursive nameservers happy_eyeballs domain lifetime seed
+    cache_size tick =
   Mkernel.run [ rng; stack; cachet ~name:"ban" ]
   @@ fun rng (daemon, tcp, udp) ban () ->
   let@ () = fun () -> Mirage_crypto_rng_mkernel.kill rng in
   let@ () = fun () -> Mnet.kill daemon in
   let hed, he = Mnet_happy_eyeballs.create ~happy_eyeballs tcp in
   let@ () = fun () -> Mnet_happy_eyeballs.kill hed in
-  let cfg = Stub.config 53 in
+  let tick = Int64.to_int tick in
+  let cfg = Stub.config ~cache_size ~tick 53 in
   let tls =
     let addresses = Mnet.addresses daemon in
     let ipaddr = Ipaddr.V4.Prefix.address (first_cidrv4 addresses) in
@@ -180,6 +182,28 @@ let seed =
   let open Arg in
   required & opt (some seed) None & info [ "seed" ] ~doc ~docv:"SEED"
 
+let cache_size =
+  let doc = "The size of the DNS cache (per upstream nameserver)." in
+  let parser str =
+    match int_of_string_opt str with
+    | Some n when n <= 0 -> error_msgf "Invalid cache-size (negative number)"
+    | Some n -> Ok n
+    | None -> error_msgf "Invalid number: %S" str
+  in
+  let positive = Arg.conv (parser, Fmt.int) in
+  let open Arg in
+  value & opt positive 10_000 & info [ "cache-size" ] ~doc ~docv:"NUMBER"
+
+let tick =
+  let doc =
+    "Delay after which, if the current upstream nameserver has not answered \
+     yet, the next one is queried in parallel."
+  in
+  let open Arg in
+  value
+  & opt duration (Duration.of_ms 500)
+  & info [ "tick" ] ~doc ~docv:"DURATION"
+
 let term =
   let open Term in
   const run
@@ -191,6 +215,8 @@ let term =
   $ domain
   $ lifetime
   $ seed
+  $ cache_size
+  $ tick
 
 let cmd =
   let info = Cmd.info "pageblanche" in

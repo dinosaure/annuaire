@@ -34,5 +34,10 @@ build: [
 ]
 synopsis: "An unikernel which serve HTTP contents"
 pin-depends: [
-  [ "zarith.dev" "git+https://github.com/mirage/Zarith.git#df8969d9bb95cffca13e31a615189ab27ada0684" ]
+  [ "zarith.dev"              "git+https://github.com/mirage/Zarith.git#df8969d9bb95cffca13e31a615189ab27ada0684" ]
+  [ "mnet.dev"                "git+https://git.robur.coop/robur/mnet.git#35564165abfd216a492986bd72e23dae4e54e024" ]
+  [ "mnet-dns.dev"            "git+https://git.robur.coop/robur/mnet.git#35564165abfd216a492986bd72e23dae4e54e024" ]
+  [ "mnet-cli.dev"            "git+https://git.robur.coop/robur/mnet.git#35564165abfd216a492986bd72e23dae4e54e024" ]
+  [ "mnet-happy-eyeballs.dev" "git+https://git.robur.coop/robur/mnet.git#35564165abfd216a492986bd72e23dae4e54e024" ]
+  [ "mnet-tls.dev"            "git+https://git.robur.coop/robur/mnet.git#35564165abfd216a492986bd72e23dae4e54e024" ]
 ]

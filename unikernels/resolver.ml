@@ -170,7 +170,8 @@ let with_timeout ~timeout fn =
   | Ok value -> Ok value
   | Error exn -> Error (`Exn exn)
 
-let _1s = 500_000_000
+let _500ms = 500_000_000
+let _1s = 1_000_000_000
 let _2s = 2_000_000_000
 let _2d = Float.to_int 1.728e+14
 
@@ -196,7 +197,13 @@ module A = struct
   type flow = Mnet.TCP.buffer Mnet.TCP.flow
 
   let really_read = really_input
-  let connect t (dst, port) = connect ~kind t.tcp (dst, port)
+
+  let connect t (dst, port) =
+    let fn () = connect ~kind t.tcp (dst, port) in
+    match with_timeout ~timeout:_1s fn with
+    | Ok flow -> flow
+    | Error `Timeout -> raise Timeout
+    | Error (`Exn exn) -> raise exn
 end
 
 module B = struct
@@ -211,7 +218,7 @@ module B = struct
       let flow = Mnet.TCP.connect ~kind:Mnet.TCP.direct t.tcp (dst, port) in
       client_of_fd t.cfg flow
     in
-    match with_timeout ~timeout:_1s fn with
+    match with_timeout ~timeout:_500ms fn with
     | Ok flow -> flow
     | Error `Timeout -> raise Timeout
     | Error (`Exn exn) -> raise exn
@@ -324,6 +331,9 @@ let new_connection : type flow.
     in
     let rec writer () =
       let fn { packet; ivar } =
+        let len = Bytes.create 2 in
+        Bytes.set_uint16_be len 0 (String.length packet);
+        Flow.write flow (Bytes.unsafe_to_string len);
         Flow.write flow packet;
         assert (Miou.Computation.try_return ivar true)
       in
@@ -352,13 +362,6 @@ let new_tls_connection = new_connection (module B)
 
 (*/*)
 
-let try_on_existing_connections t (_protocol, dst, data) =
-  match Hashtbl.find_opt t.outs dst with
-  | Some ((`TCP | `TLS), qout) ->
-      let ivar = Qout.push qout data in
-      Miou.Computation.await_exn ivar
-  | None -> false
-
 let random_src_port =
   let buf = Bytes.create 2 in
   fun () ->
@@ -370,7 +373,7 @@ let handle_query3 t (_protocol, dst, data) =
   let src_port = random_src_port () in
   Log.debug (fun m -> m "query *:%d -> %a:%d" src_port Ipaddr.pp dst 53);
   let* () = Mnet.UDP.sendto t.udp ~dst ~src_port ~port:53 data in
-  let buf = Bytes.create 1500 in
+  let buf = Bytes.create 4096 in
   (* NOTE(dinosaure): Loop until we receive a packet from the IP we actually
      queried, or hit the timeout. Anything from a different peer is silently
      dropped: an attacker who guesses [src_port] could otherwise inject
@@ -410,41 +413,53 @@ let handle_query3 t elt =
       match handle_query3 t elt with Ok () -> () | Error _err -> ()
     end
 
+let on_sent t ivar ~fallback =
+  let fn () =
+    let sent = try Miou.Computation.await_exn ivar with _ -> false in
+    if not sent then fallback ()
+  in
+  ignore (Miou.async ~orphans:t.orphans fn)
+
 let handle_query2 t ((_protocol, dst, data) as elt) =
   let qout = Qout.create () in
   let ivar = Qout.push qout data in
-  Hashtbl.add t.outs dst (`TCP, qout);
+  Hashtbl.replace t.outs dst (`TCP, qout);
   let _ =
     Miou.async ~orphans:t.orphans @@ fun () ->
     new_tcp_connection t qout (dst, 53)
   in
-  let sent = Miou.Computation.await_exn ivar in
-  if not sent then handle_query3 t elt
+  on_sent t ivar ~fallback:(fun () -> handle_query3 t elt)
 
 let handle_query1 t ((protocol, dst, data) as elt) =
   let qout = Qout.create () in
   let ivar = Qout.push qout data in
-  Hashtbl.add t.outs dst (`TLS, qout);
+  Hashtbl.replace t.outs dst (`TLS, qout);
   let _ =
     Miou.async ~orphans:t.orphans @@ fun () ->
     new_tls_connection t qout (dst, 853)
   in
-  let sent = Miou.Computation.await_exn ivar in
-  (* TODO(dinosaure): can we re-try on existing connections? *)
-  if not sent then
+  let fallback () =
     match protocol with
-    | `Udp -> handle_query3 t elt
+    | `Udp -> () (* already sent via UDP *)
     | `Tcp -> handle_query2 t elt
+  in
+  on_sent t ivar ~fallback
 
-let handle_query0 t ((protocol, _dst, _data) as elt) =
-  handle_query3 t elt;
-  let sent = try_on_existing_connections t elt in
-  Log.debug (fun m -> m "packet sent via existing connection? %b" sent);
-  if not sent then
-    match (protocol, t.opportunistic) with
-    | (`Udp | `Tcp), true -> handle_query1 t elt
-    | `Tcp, false -> handle_query2 t elt
-    | `Udp, false -> ()
+let handle_query0 t ((protocol, dst, data) as elt) =
+  if protocol = `Udp then handle_query3 t elt;
+  match (Hashtbl.find_opt t.outs dst, protocol, t.opportunistic) with
+  | Some (_, qout), _, _ ->
+      let ivar = Qout.push qout data in
+      let fallback () =
+        match (protocol, t.opportunistic) with
+        | `Udp, false -> ()
+        | `Udp, true -> handle_query1 t elt
+        | `Tcp, _ -> handle_query2 t elt
+      in
+      on_sent t ivar ~fallback
+  | None, (`Udp | `Tcp), true -> handle_query1 t elt
+  | None, `Tcp, false -> handle_query2 t elt
+  | None, `Udp, false -> ()
 
 (*/*)
 
@@ -468,10 +483,14 @@ let handle_answer_on_conn t (`Tcp, dst, port, _ttl, data) =
       Bytes.blit_string data 0 buf 2 (String.length data);
       Bytes.set_uint16_be buf 0 (String.length data);
       let ivar = Qout.push qout (Bytes.unsafe_to_string buf) in
-      let sent = Miou.Computation.await_exn ivar in
-      if not sent then
-        Log.err (fun m -> m "Impossible to answer to %a:%d" Ipaddr.pp dst port)
-      else Log.debug (fun m -> m "answer sent to %a:%d" Ipaddr.pp dst port)
+      let fn () =
+        let sent = try Miou.Computation.await_exn ivar with _ -> false in
+        if not sent then
+          Log.err (fun m ->
+              m "Impossible to answer to %a:%d" Ipaddr.pp dst port)
+        else Log.debug (fun m -> m "answer sent to %a:%d" Ipaddr.pp dst port)
+      in
+      ignore (Miou.async ~orphans:t.orphans fn)
   | None, None ->
       Logs.err (fun m ->
           m "Impossible to answer to %a:%d: no active connections" Ipaddr.pp dst
@@ -573,12 +592,14 @@ let listener t () =
   let elts = List.of_seq elts in
   Queue.clear t.queue; elts
 
-let rec tick timeout t =
-  Log.debug (fun m -> m "resolver tick (timeout: %d)" timeout);
+let rec tick deadline t =
   clean_up t.orphans;
-  let now = Fun.compose Int64.of_int Mkernel.clock_wall in
-  let t0 = Mkernel.clock_monotonic () in
-  match with_timeout ~timeout (listener t) with
+  let mono () = Int64.of_int (Mkernel.clock_monotonic ()) in
+  let timeout = deadline - Mkernel.clock_monotonic () in
+  let result =
+    if timeout <= 0 then Error `Timeout else with_timeout ~timeout (listener t)
+  in
+  match result with
   | Ok elts ->
       let fn (answers, queries) pktin =
         let state, answers', queries' =
@@ -597,18 +618,14 @@ let rec tick timeout t =
             (List.length queries));
       List.iter (handle_answer t) answers;
       List.iter (handle_query0 t) queries;
-      let t1 = Mkernel.clock_monotonic () in
-      let delta = t1 - t0 in
-      let timeout = timeout - delta in
-      let timeout = if timeout <= 0 then t.timer else timeout in
-      tick timeout t
+      tick deadline t
   | Error `Timeout ->
-      let state, answers, queries = Dns_resolver.timer t.state (now ()) in
+      let state, answers, queries = Dns_resolver.timer t.state (mono ()) in
       t.state <- state;
       List.iter (handle_answer t) answers;
       List.iter (handle_query0 t) queries;
-      tick t.timer t
-  | Error (`Exn _exn) -> tick t.timer t
+      tick (Mkernel.clock_monotonic () + t.timer) t
+  | Error (`Exn _exn) -> tick deadline t
 
 type daemon = {
     tcp_server: unit Miou.t
@@ -637,7 +654,7 @@ let create ?(features = []) ?(ip_protocol = `Ipv4_only) ?cache_size ?tls cfg tcp
   let t =
     {
       state
-    ; timer= _2s
+    ; timer= _500ms
     ; outs= Hashtbl.create 0x100
     ; ins= Hashtbl.create 0x100
     ; user's_space= Hashtbl.create 0x100
@@ -652,6 +669,7 @@ let create ?(features = []) ?(ip_protocol = `Ipv4_only) ?cache_size ?tls cfg tcp
     }
   in
   let tcp_server = Miou.async @@ fun () -> on_tcp t in
+  Mnet.UDP.bind udp ~port:53;
   let udp_server = Miou.async @@ fun () -> on_udp t in
   let crt_update, tls_server =
     let get () = Dns_resolver.primary_data t.state in
@@ -669,5 +687,7 @@ let create ?(features = []) ?(ip_protocol = `Ipv4_only) ?cache_size ?tls cfg tcp
         let prm1 = Miou.async @@ fun () -> on_tls t tls in
         (Some prm0, Some prm1)
   in
-  let ticker = Miou.async @@ fun () -> tick _2s t in
+  let ticker =
+    Miou.async @@ fun () -> tick (Mkernel.clock_monotonic () + t.timer) t
+  in
   (t, { tcp_server; udp_server; crt_update; tls_server; ticker })

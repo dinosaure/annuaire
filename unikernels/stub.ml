@@ -1,4 +1,5 @@
 let src = Logs.Src.create "pageblanche.stub"
+let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
@@ -13,10 +14,12 @@ type cfg = {
   ; timeout: int64 option
   ; port: int
   ; secure_port: int
+  ; tick: int
 }
 
-let config ?cache_size ?edns ?timeout ?(secure_port = 853) port =
-  { cache_size; edns; timeout; port; secure_port }
+let config ?cache_size ?edns ?timeout ?(secure_port = 853) ?(tick = 500_000_000)
+    port =
+  { cache_size; edns; timeout; port; secure_port; tick }
 
 exception Timeout
 
@@ -45,6 +48,7 @@ type t = {
   ; mutable server: Dns_server.t
   ; clients: Mnet_dns.t list
   ; ban: Mkernel.Block.t Cachet.t
+  ; tick: int
 }
 
 (* NOTE(dinosaure): [Mnet.TCP.input] fills its internal ring-buffer only when
@@ -84,25 +88,28 @@ let with_tcp t ~handler tcp port =
   go (Miou.orphans ()) (Mnet.TCP.listen tcp port)
 
 let with_udp t ~handler udp port =
-  let rec go () =
+  let rec go orphans =
+    clean_up orphans;
     let buf = Bytes.create 4096 in
     let len, (peer, pport) = Mnet.UDP.recvfrom udp ~port buf in
     let str = Bytes.sub_string buf 0 len in
-    match handler t `Udp peer str with
-    | None -> go ()
-    | Some (_ttl, str) ->
-        let on_error err =
-          Log.warn (fun m ->
-              m "Failure while sending to %a:%d: %a" Ipaddr.pp peer pport
-                Mnet.UDP.pp_error err)
-        in
-        let result =
+    let _ =
+      Miou.async ~orphans @@ fun () ->
+      match handler t `Udp peer str with
+      | None -> ()
+      | Some (_ttl, str) ->
+          let on_error err =
+            Log.warn (fun m ->
+                m "Failure while sending to %a:%d: %a" Ipaddr.pp peer pport
+                  Mnet.UDP.pp_error err)
+          in
           Mnet.UDP.sendto udp ~dst:peer ~src_port:port ~port:pport str
-        in
-        Result.iter_error on_error result;
-        go ()
+          |> Result.iter_error on_error
+    in
+    go orphans
   in
-  go ()
+  Mnet.UDP.bind udp ~port;
+  go (Miou.orphans ())
 
 let with_tls t tls ~handler tcp port =
   let rec go orphans listen =
@@ -244,8 +251,6 @@ let server t proto ipaddr pkt hdr question data str =
       let pkt = reply hdr question proto data in
       Some (pkt, Dns.Rcode.NotImp)
 
-let _5ms = 500_000_000
-
 let pp_nameservers ppf (proto, nameservers) =
   match (proto, nameservers) with
   | `Tcp, `Tls (_, ipaddr, port) :: _ ->
@@ -256,70 +261,65 @@ let pp_nameservers ppf (proto, nameservers) =
       Fmt.pf ppf "udp://%a:%d" Ipaddr.pp ipaddr port
   | _ -> assert false
 
-let race clients key name =
-  let cancel orphans =
-    let prms = Seq.of_dispenser (fun () -> Miou.take orphans) in
-    let prms = List.of_seq prms in
-    List.iter Miou.cancel prms
-  in
-  let rec clean_up orphans =
-    match Miou.care orphans with
-    | None | Some None -> None
-    | Some (Some prm) ->
-        begin match Miou.await prm with
-        | Error _exn -> clean_up orphans
-        | Ok (Error (`Msg _)) -> clean_up orphans
-        | Ok data -> Some data
-        end
-  in
-  let rec terminate orphans =
-    match Miou.care orphans with
-    | None -> None
-    | Some None -> Mkernel.sleep _5ms; terminate orphans
-    | Some (Some prm) ->
-        begin match Miou.await prm with
-        | Error _exn -> terminate orphans
-        | Ok (Error (`Msg _)) -> terminate orphans
-        | Ok data ->
-            Log.debug (fun m ->
-                m "Got a new response, cancel other resolver(s)");
-            cancel orphans;
-            Some data
-        end
-  in
-  let rec go orphans clients =
-    match (clean_up orphans, clients) with
-    | None, [] ->
-        Log.debug (fun m -> m "Waiting our resolver(s)");
-        terminate orphans
-    | None, client :: clients ->
-        Log.debug (fun m ->
-            m "Trying with %a" pp_nameservers (Mnet_dns.nameservers client));
-        let prm0 =
-          Miou.async ~orphans @@ fun () ->
-          Mnet_dns.get_resource_record client key name
+type 'a event = [ `Tick | `Answer of int * 'a ]
+
+(* NOTE(dinosaure): The aim here is to run a race between all the nameservers
+   available to us. We send a request to each nameserver/client every
+   [t.tick]ns. If a client responds before the tick, we cancel all the others
+   and return the response. Otherwise, we wait [t.tick] ns and try sending the
+   request to a new client/nameserver.
+
+   [id]/[id'] provides an associative list of promises so that we can properly
+   clean up concurrent tasks (if they fail or are cancelled), as we are using
+   [Miou.await_one] (which consumes the promise but does not tell us which one).
+*)
+let race ~tick clients key name =
+  let ask id client () =
+    match Mnet_dns.get_resource_record client key name with
+    | value -> `Answer (id, value)
+    | exception exn ->
+        let err =
+          error_msgf "Unexpected exception: %s" (Printexc.to_string exn)
         in
-        let prm1 =
-          Miou.async ~orphans @@ fun () -> Mkernel.sleep _5ms; raise Timeout
-        in
-        begin match Miou.await_one [ prm0; prm1 ] with
-        | Error _exn ->
-            Log.debug (fun m -> m "Try with the next nameserver");
-            go orphans clients
-        | Ok (Error (`Msg _)) ->
-            Log.debug (fun m -> m "Try with the next nameserver");
-            go orphans clients
-        | Ok data -> cancel orphans; Some data
-        end
-    | Some data, _ -> cancel orphans; Some data
+        `Answer (id, err)
   in
-  go (Miou.orphans ()) clients
+  let start pending id client =
+    Log.debug (fun m ->
+        m "Trying with %a" pp_nameservers (Mnet_dns.nameservers client));
+    (id, Miou.async (ask id client)) :: pending
+  in
+  let cancel_all prms = List.iter (fun (_, prm) -> Miou.cancel prm) prms in
+  let rec go pending id clients =
+    match (pending, clients) with
+    | [], [] -> None
+    | [], client :: clients -> go (start [] id client) (succ id) clients
+    | _ ->
+        let timer =
+          if clients = [] then []
+          else [ (-1, Miou.async @@ fun () -> Mkernel.sleep tick; `Tick) ]
+        in
+        let result = Miou.await_one (List.map snd (timer @ pending)) in
+        cancel_all timer;
+        begin match (result, clients) with
+        | Ok `Tick, client :: clients ->
+            go (start pending id client) (succ id) clients
+        | Ok (`Answer (_, (Ok _ as value))), _
+        | Ok (`Answer (_, (Error (`No_data _ | `No_domain _) as value))), _ ->
+            cancel_all pending; Some value
+        | Ok (`Answer (id', Error (`Msg msg))), _ ->
+            Log.debug (fun m -> m "Nameserver %d failed: %s" id' msg);
+            let pending = List.filter (fun (id, _) -> id <> id') pending in
+            go pending id clients
+        | Ok `Tick, [] | Error _, _ -> cancel_all pending; None
+        end
+  in
+  go [] 0 clients
 
 let resolve t question data hdr proto =
   let name = fst question in
   match (data, snd question) with
   | `Query, `K (Dns.Rr_map.K key) ->
-      begin match race t.clients key name with
+      begin match race ~tick:t.tick t.clients key name with
       | None | Some (Error (`Msg _)) ->
           let data = `Rcode_error Dns.(Rcode.ServFail, Opcode.Query, None) in
           let reply = reply hdr question proto data in
@@ -425,7 +425,7 @@ let create cfg ?(with_reserved = true) ~ban ?tls tcp udp he nameservers =
   in
   let clients = List.map fn nameservers in
   Logs.info (fun m -> m "Use %d nameserver(s)" (List.length clients));
-  let t = { server; clients; mutex; ban } in
+  let t = { server; clients; mutex; ban; tick= cfg.tick } in
   let tcp_server = Miou.async @@ fun () -> with_tcp t ~handler tcp cfg.port in
   let udp_server = Miou.async @@ fun () -> with_udp t ~handler udp cfg.port in
   let tls_server, crt_update =
