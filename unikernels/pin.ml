@@ -4,16 +4,22 @@ let ( let* ) = Result.bind
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-type t = Dns.Rr_map.Tlsa_set.t Atomic.t
+type t = {
+    pins: Dns.Rr_map.Tlsa_set.t Atomic.t
+  ; stale: unit Miou.Computation.t Atomic.t
+}
 
 type error =
   [ `Msg of string
   | `No_data of [ `raw ] Domain_name.t * Dns.Soa.t
   | `No_domain of [ `raw ] Domain_name.t * Dns.Soa.t ]
 
-let v initial = Atomic.make initial
-let get t = Atomic.get t
-let set t v = Atomic.set t v
+let v initial =
+  { pins= Atomic.make initial; stale= Atomic.make (Miou.Computation.create ()) }
+
+let get t = Atomic.get t.pins
+let set t v = Atomic.set t.pins v
+let signal t = ignore (Miou.Computation.try_return (Atomic.get t.stale) ())
 
 let leaf_spki_matches pins leaf =
   let pk = X509.Certificate.public_key leaf in
@@ -31,9 +37,10 @@ let authenticator t : X509.Authenticator.t =
   match certs with
   | [] -> error_msgf "Certificate not found"
   | leaf :: _ ->
-      let pins = Atomic.get t in
+      let pins = get t in
       if leaf_spki_matches pins leaf then Ok None
       else begin
+        signal t;
         let pk = X509.Certificate.public_key leaf in
         let fg = X509.Public_key.fingerprint ~hash:`SHA256 pk in
         Log.warn (fun m ->
@@ -70,28 +77,47 @@ let tlsas_of_counts ~seed counts =
 let _60s = 60l
 let _1d = 86_400l
 let _1s = 1l
+let _5s = 5_000_000_000
+
+let fetch_counts dns gen =
+  match Mnet_dns.get_raw_reply dns Dns.Rr_map.Txt gen with
+  | Error `Partial -> error_msgf "partial reply"
+  | Error (`Msg _) as err -> err
+  | Ok (`Answer (answer, _)) ->
+      begin match Dns.Name_rr_map.find gen Dns.Rr_map.Txt answer with
+      | Some (ttl, txts) -> Ok (ttl, txts)
+      | None -> error_msgf "no TXT record at %a" Domain_name.pp gen
+      end
+  | Ok reply -> error_msgf "unexpected reply: %a" Dns.Packet.pp_reply reply
+
+(* NOTE(dinosaure): here, we wait [ns] nanoseconds or if we got an invalid
+   pinned TLSA (see [t.stale]). *)
+let wait t ns =
+  let stale = Miou.Computation.create () in
+  Atomic.set t.stale stale;
+  Mkernel.sleep (Int.min ns _5s);
+  if ns > _5s then begin
+    let prm0 = Miou.async @@ fun () -> Mkernel.sleep (ns - _5s)
+    and prm1 = Miou.async @@ fun () -> Miou.Computation.await_exn stale in
+    ignore (Miou.await_first [ prm0; prm1 ])
+  end
 
 let renew t dns _gen seed =
   let rec go () =
     let pins_before = get t in
     Logs.info (fun m -> m "Asking for %a" Domain_name.pp _gen);
-    match Mnet_dns.get_resource_record dns Dns.Rr_map.Txt _gen with
-    | Error err ->
-        let pp_err ppf = function
-          | `Msg msg -> Fmt.string ppf msg
-          | `No_data _ -> Fmt.string ppf "no TXT record"
-          | `No_domain _ -> Fmt.string ppf "domain does not exist"
-        in
+    match fetch_counts dns _gen with
+    | Error (`Msg msg) ->
         Logs.warn (fun m ->
-            m "upstream counter refresh failed (%a); retrying in 1mn" pp_err err);
-        Mkernel.sleep (60 * 1_000_000_000);
+            m "upstream counter refresh failed (%s); retrying in 1mn" msg);
+        wait t (60 * 1_000_000_000);
         go ()
     | Ok (ttl, txts) ->
         begin match counts_of_txts txts with
         | [] ->
             Logs.warn (fun m ->
                 m "No valid counter at %a; retrying in 1mn" Domain_name.pp _gen);
-            Mkernel.sleep (60 * 1_000_000_000);
+            wait t (60 * 1_000_000_000);
             go ()
         | counts ->
             Logs.info (fun m ->
@@ -105,7 +131,7 @@ let renew t dns _gen seed =
               else if Int32.compare half _1d > 0 then _1d
               else half
             in
-            Mkernel.sleep (Int32.to_int next_secs * 1_000_000_000);
+            wait t (Int32.to_int next_secs * 1_000_000_000);
             go ()
         end
   in
