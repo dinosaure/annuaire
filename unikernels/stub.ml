@@ -4,6 +4,7 @@ let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 module Log = (val Logs.src_log src : Logs.LOG)
 
 let _2s = 2_000_000_000
+let _10s = 10_000_000_000
 
 type io_addr =
   [ `Plaintext of Ipaddr.t * int | `Tls of Tls.Config.client * Ipaddr.t * int ]
@@ -30,6 +31,14 @@ let with_timeout ~timeout fn =
   | Error Timeout -> Error `Timeout
   | Ok v -> Ok v
   | Error exn -> Error (`Exn exn)
+
+exception Idle
+
+let read_idle read flow buf =
+  match with_timeout ~timeout:_10s (fun () -> read flow buf) with
+  | Ok () -> ()
+  | Error `Timeout -> raise Idle
+  | Error (`Exn exn) -> raise exn
 
 let rec clean_up orphans =
   match Miou.care orphans with
@@ -69,7 +78,7 @@ let with_tcp t ~handler tcp port =
       Miou.Ownership.own res;
       let rec go () =
         let len = Bytes.create 2 in
-        Mnet.TCP.really_input flow len;
+        read_idle (fun flow buf -> Mnet.TCP.really_input flow buf) flow len;
         let len = Bytes.get_uint16_be len 0 in
         let buf = Bytes.create len in
         Mnet.TCP.really_input flow buf;
@@ -135,7 +144,7 @@ let with_tls t tls ~handler tcp port =
           Miou.Ownership.own res1;
           let rec go () =
             let len = Bytes.create 2 in
-            Mnet_tls.really_read tls len;
+            read_idle (fun tls buf -> Mnet_tls.really_read tls buf) tls len;
             let len = Bytes.get_uint16_be len 0 in
             let buf = Bytes.create len in
             Mnet_tls.really_read tls buf;

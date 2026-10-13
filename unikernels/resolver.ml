@@ -173,6 +173,7 @@ let with_timeout ~timeout fn =
 let _500ms = 500_000_000
 let _1s = 1_000_000_000
 let _2s = 2_000_000_000
+let _10s = 10_000_000_000
 let _2d = Float.to_int 1.728e+14
 
 module type FLOW = sig
@@ -241,7 +242,12 @@ let incoming_connection : type flow.
     Miou.Ownership.own o;
     let rec reader () =
       let hdr = Bytes.create 2 in
-      Flow.really_read flow hdr;
+      let fn () = Flow.really_read flow hdr in
+      begin match with_timeout ~timeout:_10s fn with
+      | Ok () -> ()
+      | Error `Timeout -> raise Timeout
+      | Error (`Exn exn) -> raise exn
+      end;
       let len = Bytes.get_uint16_be hdr 0 in
       let buf = Bytes.create len in
       Flow.really_read flow buf;
