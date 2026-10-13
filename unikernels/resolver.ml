@@ -555,6 +555,7 @@ let on_tcp t =
 
 let on_tls t tls =
   let rec go orphans listen =
+    clean_up orphans;
     let flow = Mnet.TCP.accept ~kind:Mnet.TCP.direct t.tcp listen in
     let _ =
       Miou.async ~orphans @@ fun () ->
